@@ -1,0 +1,335 @@
+---
+title: 'DATS 6101 Project 1: Chicago Crime'
+author: Nathaniel Schwamm, Andrew Jones, Christopher Broll, and Toufik Bouras
+date: 16 October 2017
+output: html_document
+---
+
+```{r set_up, include=FALSE, message=FALSE, warning=FALSE}
+
+#note we are suppressing warnings and messages, because for some of our graphs we are only highlighting certain points and R will tell us that some data is missing. Running the file without those supressions will lead to the same output, but there will be some warning messages printed. 
+
+#Establish Libraries, read in Data, and remove duplicate records
+
+library(DT)
+library(data.table)
+library(readr)
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(corrplot)
+library(ggrepel)
+library(pander)
+
+
+#scientific notation
+options(scipen = 999)
+
+#load in the 2012 to 2017 data; *note: this is saved as an RDS file to speed up data load
+
+#Years_2012to2017 <- read.csv('/Users/Nathaniel/Dropbox/GW/Senior Year/Intro to Data Science/Projects/Project 1/Chicago_Crimes_2012_to_2017.csv', stringsAsFactors = FALSE)
+#crime <- distinct(Years_2012to2017)
+#crime[crime == ""]<-NA #recast all blank values as null
+#saveRDS(crime,file="ChiCrimeData.rds")
+
+```
+
+## Set Up
+  
+In order to dramatically reduce the speed of running this file, we loaded the data as the csv we downloaded only the first time. After that we created an RDS file contatining our data frame, and we used that for the future running of this program and our analysis. Thus, the commented out section in the beginning will need to be run once, if you do not have the RDS file alraedy created.
+
+```{r data_prep, include=FALSE}
+                                  #### Exploratory Data Analysis ####
+#Load and Prepare Data
+#*Note:need to have the RDS file, otherwise run the previous chunk
+setwd('/Users/Nathaniel/Dropbox/GW/Senior Year/Intro to Data Science/Projects/Project 1/')
+crime <- readRDS("ChiCrimeData.rds")
+#break up date/time into two seperate vectors
+crime <- separate(crime, Date, c("date","time","AM"), sep=" ")
+#create time series data
+crime$Date <- as.Date(crime$date,format="%m/%d/%Y")
+#create month, day, year, hour, minute, and second variables separetly
+crime <- separate(crime, date, c("month","day","year"), sep="/")
+crime <- separate(crime, time, c("hour","minute","second"), sep=":")
+#create 24 hour clock
+crime$hour_24 <- ifelse(crime$AM=="AM",as.numeric(crime$hour),as.numeric(crime$hour)+12)
+
+#get rid of partial data from 2017, keep only relevant columns
+crime_time_series <- subset(crime, year!="2017", select=c("ID","month","day","year","hour_24","hour","minute","second","AM","IUCR","Primary.Type","Description","Location.Description","Arrest","Domestic","FBI.Code"))
+
+#format variables
+crime_time_series$Primary.Type <- as.character(crime_time_series$Primary.Type)
+crime_time_series$Location.Description <- as.factor(crime_time_series$Location.Description)
+
+#load in IUCR codes to compare Index and Non-Index Crimes
+crime_codes <- read.csv('Chicago_Police_Department_-_Illinois_Uniform_Crime_Reporting__IUCR__Codes-3.csv', stringsAsFactors = FALSE)
+crime_codes <- crime_codes[,c("IUCR","INDEX.CODE")]
+colnames(crime_codes) <- c("IUCR","Index")
+#standardize the numbers
+crime_codes$IUCR <- sprintf("%04s",crime_codes$IUCR)
+#merge the data sets
+crime_time_series <- join(crime_time_series,crime_codes,by="IUCR",type="left")
+#check the datasets
+Index_Count <- plyr::count(crime_time_series, 'Index')
+#Note: there are 10099 missing values
+#quick test to see which ones are blank
+crime_index_blank <- subset(crime_time_series, is.na(Index))
+#0840s = financial crimes and the 5000s are other unique crimes/non criminal acitvity (like a lost passport)
+#unique(crime_index_blank$IUCR)
+Index_Count <- plyr::count(subset(crime_time_series, !is.na(Index)),'Index')
+
+
+#rename some crimes because their titles are too long in the graphs
+crime_time_series$Primary.Type <- ifelse(crime_time_series$Primary.Type=="OFFENSE INVOLVING CHILDREN","CHILD RELATED",crime_time_series$Primary.Type)
+crime_time_series$Primary.Type <- ifelse(crime_time_series$Primary.Type=="INTERFERENCE WITH PUBLIC OFFICER","INTERFERENCE",crime_time_series$Primary.Type)
+crime_time_series$Primary.Type <- ifelse(crime_time_series$Primary.Type=="CONCEALED CARRY LICENSE VIOLATION","GUN VIOLATION",crime_time_series$Primary.Type)
+crime_time_series$Primary.Type <- ifelse(crime_time_series$Primary.Type=="OTHER NARCOTIC VIOLATION","NARCOTIC VIOLATION",crime_time_series$Primary.Type)
+crime_time_series$Primary.Type <- ifelse(crime_time_series$Primary.Type=="NON-CRIMINAL (SUBJECT SPECIFIED)","NON-CRIMINAL",crime_time_series$Primary.Type)
+crime_time_series$Primary.Type <- ifelse(crime_time_series$Primary.Type=="PUBLIC PEACE VIOLATION","NOISE",crime_time_series$Primary.Type)
+
+
+```
+
+##Summary of Dataset
+
+We first want to check a quick summary of the data and look at its structure. We can also print the data set in order to scroll through it quickly. 
+  
+```{r data_summary, echo=FALSE}
+
+#### 1:Summary of the Dataset ####
+pander(summary(crime_time_series))
+
+str(crime_time_series)
+
+print("Explore the strucutre of the data")
+datatable(head(crime_time_series, n = 1000),options = list(pageLength = 10))
+#tail(crime_time_series, n = 20)
+```
+  
+##Data Checks
+
+Just to make sure there is no missing data, we can run a quick check on the data. 
+```{r basic_info, echo=FALSE}
+#Check data to see where there is missing data
+Null_Count<- sapply(crime_time_series, function(x) sum(is.na(x)))
+print(Null_Count)
+print("There are around 1630 criminal incidents with missing location descriptions, and there are a lot of crimes without an index classification")
+```
+   
+##Descriptive Stats 
+
+Below we created simple tables to examine the frequencies of different variables of interest.
+  
+```{r descriptive_stats, echo=FALSE}
+#### 2:Descriptive statistics ####
+Crime_Count <- plyr::count(crime_time_series, 'Primary.Type')
+Crime_Count <- arrange(Crime_Count, desc(freq)) #arrange by top crimes
+datatable(Crime_Count, colnames=c("Crime","Frequency"), rownames = F)
+
+Location_Count <- plyr::count(crime_time_series, 'Location.Description')
+Location_Count <- arrange(Location_Count, desc(freq)) #arrange by top locations
+datatable(Location_Count, colnames=c("Location","Frequency"), rownames = F)
+
+Arrest_Count <- plyr::count(crime_time_series, 'Arrest')
+Arrest_Count <- filter(Arrest_Count, Arrest == 'True' | Arrest == 'False') #filter erroneous data
+datatable(Arrest_Count, colnames=c("Arrests","Frequency"), rownames = F)
+
+#create Yearly Crime count by Crime Type
+Yearly_Count <- plyr::count(crime_time_series, c("year","Primary.Type"))
+Yearly_Count_2 <- spread(Yearly_Count, year, freq)
+Yearly_Count_2 <- arrange(Yearly_Count_2, desc(`2016`)) #arrange by Year
+datatable(Yearly_Count_2, colnames=c("Crime","2012","2013","2014","2015","2016"), rownames = F)
+
+#create Yearly Crime count by Index Type
+Yearly_Index <- plyr::count(crime_time_series, c("year","Index"))
+Yearly_Index_2 <- spread(Yearly_Index, year, freq)
+Yearly_Index_2 <- arrange(Yearly_Index_2, desc(`2016`)) #arrange by top 
+datatable(Yearly_Index_2, colnames=c("Index Level","2012","2013","2014","2015","2016"), rownames = F)
+```
+   
+   
+##Graphs
+
+We can also look at this data graphically instead of just in table format.
+```{r graphs_1, echo=FALSE, message=FALSE, warning=FALSE}
+
+### 3:Graphical Representations of Data ###
+
+#Crimes by type over entire period ranked
+
+barplot(Crime_Count$freq, main = 'Chicago Crime Count by Type', names.arg = Crime_Count$Primary.Type, cex.names = 0.4, las=2)
+
+barplot(Index_Count$freq, main = 'Chicago Crime Count by Index Level', names.arg = c("Index","Non-Index"), ylab="Crime Frequency")
+
+
+#Line Chart for Crimes by Type over Time
+Yearly_Count$label <- ifelse(Yearly_Count$Primary.Type=="THEFT","THEFT",NA)
+Yearly_Crime_LineChart <- ggplot(data = Yearly_Count, aes(x=year, y= freq, group= Primary.Type, colour = Primary.Type)) + geom_line()+theme(legend.key.size = unit(.8, 'lines'), legend.position = 'none')+labs(title = "Yearly Chicago Crimes by Type") + geom_label_repel(data = subset(Yearly_Count, year == "2016"), aes(label=Yearly_Count[Yearly_Count$year=="2016","label"]))
+suppressMessages(Yearly_Crime_LineChart)
+
+
+```
+  
+#Measures of Central Tendency and Variance
+
+We can also calculate measures of mean and variance to give us quick summary statisics about the frequencies of different crimes by year. Using the ddply function in the plyr package allows us to do this for all of the types of crime at the same time. 
+  
+```{r summary_stats, echo=FALSE}
+
+### 4:Measures of Variance ###
+
+#Mean, Variance and Standard Deviation Table
+Yearly_Mean_Variance <- plyr::ddply(Yearly_Count, .(Primary.Type), summarise, y.mean = round(mean(freq), digits = 0), y.var = round(var(freq), digits = 0), y.sd = round(sd(freq), digits = 0))
+pander(Yearly_Mean_Variance)
+
+```
+
+#Chi-Squared Testing
+  
+For the testing section of our analysis, we performed two levels of chi-squared testing for all three of the temporal factors. First, we performed a goodness of fit test. We chose a goodness of fit, testing a model of equal frequencies (by year, month, or hour) over an ANOVA test, because we were specifically looking at the causal qualitative variable of the temporal factor and the quantaitve measure of frequency. For all of these three tests, the null hypothesis was that the distribution of the data was all equal to that model of equality. In other words, it tested whether each year represented 1/5 of the total frequency, each month represented 1/12 of the total, or each hour represented 1/24 if the total. The alternative hypothesis was the negation that the equality model was correct. The goodness-of-fit test for year was used to show there was in fact some differences in the annual crime rates, otherwise the backing for the study would be incorrect, while the tests for month and hour was used to check the hypothesis and thoughts we had going in.
+
+The second test we performed was a chi-squared test of indepedence, where we tested for the indepedence between the temporal factor and then the severity of the crime. Because we lacked a lot of detail about the exact level of the crime, we used the Chicago crime codes matched with their definition of FBI index crimes to use "index crimes" to be crimes of higher severity. Index crimes are the eight crimes the FBI combines to produce its annual crime index which was necessary for comparison purposes between states. This was the best estimate of serious and non-serious or violent and non-violent crimes, however the comparison to this as severity is not perfect. However, for all three temporal factors, we wanted to see how that factor interplayed with the severity of the crimes. For all of these tests, the null hypothesis was that the factors were independent, and the alternative hypothesis was that they were depedent. 
+
+The results of the two tests for year are displayed below.
+
+####Year
+```{r year, echo=FALSE, message=FALSE, warning=FALSE}
+#turn scienfitifc notation back on to show super small p-values.
+options(scipen=0)
+
+### 5:Initial Correlation/Chi Square/ANOVA analysis ###
+
+
+#GOF
+Year_Count <- plyr::count(crime_time_series, c("year"))
+Year_Count <- arrange(Year_Count, desc(freq))
+#plot the differences
+Year_Count$year <- as.numeric(Year_Count$year)
+ggplot(Year_Count, aes(x=year, y=freq)) + geom_point() + labs(main="Crime Frequency by Year", x="Year",y="Frequency")
+#Chi-Squared Test for Goodness of Fit
+#contigency table
+Year_Count$expected <- 1/nrow(Year_Count)
+pander(chisq.test(x=Year_Count$freq,p=Year_Count$expected))
+
+#Indepedence
+#year lines by index
+year_line_data <- plyr::count(crime_time_series, c("year","Primary.Type","Index"))
+year_line_data$group <- paste(year_line_data$Primary.Type,year_line_data$Index)
+year_line_data <- year_line_data[!is.na(year_line_data$Index),]
+year_line_data$label <- ifelse(year_line_data$group %in% c("THEFT I","HOMOCIDE I","OBSCENITY N"), "label","no_label")
+year_line_data$label <- ifelse(year_line_data$label=="label",year_line_data$Primary.Type,NA)
+#Line Chart for Crimes by Type over Time
+Yearly_Crime_LineChart <- ggplot(data = year_line_data, aes(x=year, y= freq, group= group, colour = Index)) + geom_line()+ theme(legend.key.size = unit(.8, 'lines'), legend.position = 'bottom')+labs(title = "Yearly Chicago Crimes by Index") + geom_label_repel(data = subset(year_line_data, year == "2016"), aes(label=year_line_data[year_line_data$year=="2016","label"]))
+Yearly_Crime_LineChart
+plyr::count(crime_time_series[!is.na(crime_time_series$Index),],c("year","Index"))
+
+#year_indep
+Year_Index_test <- plyr::count(crime_time_series, c("year","Index"))
+Year_Index_test <- subset(Year_Index_test, !is.na(Index))
+Year_Index_test_ind <- spread(Year_Index_test, Index, freq)
+rownames(Year_Index_test_ind) <- Year_Index_test_ind$year
+Year_Index_test_ind <- Year_Index_test_ind[,c("I","N")]
+year_chisq <- chisq.test(Year_Index_test_ind)
+pander(year_chisq)
+
+
+
+```
+  
+We can clearly see the significance of both tests on year. This means we have reasons to reject both null hypothesis at an extremly high significance level. We can assume that crime rates have changed year to year and that change has been different for index and non-index crimes. 
+
+We can do the same analysis for monthly variation.
+
+  
+####Month
+```{r month, echo=FALSE,message=FALSE, warning=FALSE}
+#Test for month
+Month_Count <- plyr::count(crime_time_series, c("month"))
+Month_Count <- arrange(Month_Count, desc(freq))
+#plot the differences
+Month_Count$month <- as.numeric(Month_Count$month)
+ggplot(Month_Count, aes(x=month, y=freq)) + geom_point() + labs(main="Crime Frequency by Month of Year", x="Month",y="Frequency") + scale_x_continuous(breaks = c(1,3,6,9,12),labels = c("January","March", "June", "September", "December"))
+#Chi-Squared Test for Goodness of Fit
+#contigency table
+Month_Count$expected <- 1/nrow(Month_Count)
+pander(chisq.test(x=Month_Count$freq,p=Month_Count$expected))
+
+
+#create month count by Index Type
+Month_Index <- plyr::count(crime_time_series, c("month","Index"))
+#remove missing index values
+Month_Index <- subset(Month_Index, !is.na(Index))
+Month_Index$month <- as.numeric(Month_Index$month)
+ggplot(Month_Index, aes(x=month, y=freq, colour=Index)) + geom_point() + labs(main="Crime Frequency by Month", x="Month",y="Frequency") + scale_x_continuous(breaks = c(1,3,6,9,12),labels = c("January","March", "June", "September", "December")) + scale_colour_manual(breaks = Month_Index$Index, values = c("#FF0000","#3399FF"))
+
+#chi-squared test for independence
+Month_Index_test <- plyr::count(crime_time_series, c("month","Index"))
+Month_Index_test <- subset(Month_Index_test, !is.na(Index))
+Month_Index_test_ind <- spread(Month_Index_test, Index, freq)
+rownames(Month_Index_test_ind) <- Month_Index_test_ind$month
+Month_Index_test_ind <- Month_Index_test_ind[,c("I","N")]
+chisq_month <- chisq.test(Month_Index_test_ind)
+pander(chisq_month)
+
+#see residuals and influence
+par(mfrow=c(1,2)) 
+corrplot(chisq_month$residuals, is.cor = FALSE, cl.pos="n", title="Residuals", mar=c(0,0,1,0))
+contrib_month <- 100*chisq_month$residuals^2/chisq_month$statistic
+corrplot(contrib_month, is.cor = FALSE, cl.pos="n", title="Influence", mar=c(0,0,1,0))
+
+```
+
+  
+Like year, we see very signficant results that can lead us to reject the null hypothesis for both tests. This would follow along with the topic literature because we can see that there are seasonal spikes in the summer. Furthermore, we can see that the severity of crime interacts with these seasonal affects. When we look at the residuals and the influence of the different months on the chi-squared value, it is clear that the dips in the early months appear to differ the most from their expected values. This may relate to Hird's analysis that differnt types of crime take this seasonality affect in different directions. 
+
+####Hour  
+```{r hour, echo=FALSE,message=FALSE, warning=FALSE}
+
+
+##Test for time of day
+
+#General Frequency
+Time_Count <- plyr::count(crime_time_series, c("hour_24"))
+Time_Count <- arrange(Time_Count, hour_24)
+#Convert to standard time
+Time_Count$hour <- ifelse(Time_Count$hour_24 >= 13, paste0(Time_Count$hour_24-12," PM"),paste0(Time_Count$hour_24," AM"))
+Time_Count$hour_24 <- ifelse(Time_Count$hour_24 == 24, 0,Time_Count$hour_24)
+#plot the differences
+Time_Count$hour <- as.factor(Time_Count$hour)
+ggplot(Time_Count, aes(x=hour_24, y=freq)) + geom_point() + labs(main="Crime Frequency by Hour of Day", x="Time of Day",y="Frequency") + scale_x_continuous(breaks = c(0,6,12,18,23),labels = c("Midnight","6 AM", "Noon", "6PM", "11PM"))
+#Chi-Squared Test for Goodness of Fit
+#contigency table
+Time_Count$expected <- 1/nrow(Time_Count)
+pander(chisq.test(x=Time_Count$freq,p=Time_Count$expected))
+
+
+#create Time count by Index Type
+Time_Index <- plyr::count(crime_time_series, c("hour_24","Index"))
+#remove missing index values
+Time_Index <- subset(Time_Index, !is.na(Index))
+Time_Index[Time_Index$hour_24==24,]$hour_24 <- 0
+ggplot(Time_Index, aes(x=hour_24, y=freq, colour=Index)) + geom_point() + labs(main="Crime Frequency by Hour of Day", x="Time of Day",y="Frequency") + scale_x_continuous(breaks = c(0,6,12,18,23),labels = c("Midnight","6 AM", "Noon", "6PM", "11PM")) + scale_colour_manual(breaks = Time_Index$Index, values = c("#FF0000","#3399FF"))
+
+#chi-squared test for independence
+Time_Index_test <- plyr::count(crime_time_series, c("hour","AM","Index"))
+Time_Index_test <- subset(Time_Index_test, !is.na(Index))
+Time_Index_test_ind <- spread(Time_Index_test, Index, freq)
+Time_Index_test_ind <- arrange(Time_Index_test_ind, AM)
+rownames(Time_Index_test_ind) <- paste0(Time_Index_test_ind$hour," ",Time_Index_test_ind$AM)
+Time_Index_test_ind <- Time_Index_test_ind[,c("I","N")]
+chisq <- chisq.test(Time_Index_test_ind)
+pander(chisq)
+
+#see residuals and influence
+par(mfrow=c(1,2)) 
+corrplot(chisq$residuals, is.cor = FALSE, cl.pos="n", title="Residuals", mar=c(0,0,1,0))
+contrib_time <- 100*chisq$residuals^2/chisq$statistic
+corrplot(contrib_time, is.cor = FALSE, cl.pos="n", title="Influence", mar=c(0,0,1,0))
+```
+
+Like both year and month, we see very signficant results from hour that can lead us to reject the null hypothesis for both tests. This would follow along with the topic literature because we can see that there are hourly spikes at night approaches that dips when people start to fall asleep. Furthermore, we can see that the severity of crime interacts with this effect. When we look at the residuals and the influence of the different hours of the day, it shows that the early morning dip seems to be responsbile for a large relative portion of the chi-squared score. Comparising this with the graph we see that index and non-index crimes fall to a relatively similar value, even when non-index crimes signifcantly outpace index crimes for the rest of the day. This is probably an indicator that the effect of people going to bed may be more powerful than the depdendence of time and crime severity. 
+
+
+##Conclusion
+Throughout this process, we have analyzed two types factors impacting crime frequency in Chicago (temporal factors and crime severity). Utilizing the exploratory process, we were able to narrow and specify our research question, and begin to develop ways to discover an answer. We display partial results here.We explore in more detail the relationship between these temporal factors, crime severity, and crime frequency in our paper.
